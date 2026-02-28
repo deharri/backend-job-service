@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: job-service
+
+  profiles:
+    active: dev
+
+eureka:
+  instance:
+    prefer-ip-address: true
+  client:
+    fetch-registry: true
+    register-with-eureka: true
+    service-url:
+      defaultZone: http://${EUREKA_HOST:localhost}:${EUREKA_PORT:8761}/eureka/
+
+logging:
+  level:
+    org:
+      apache:
+        warn

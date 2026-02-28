@@ -1,0 +1,154 @@
+package com.deharri.jlds.review;
+
+import com.deharri.jlds.enums.JobStatus;
+import com.deharri.jlds.enums.ReviewType;
+import com.deharri.jlds.error.exception.InvalidOperationException;
+import com.deharri.jlds.error.exception.UnauthorizedAccessException;
+import com.deharri.jlds.listing.JobListingService;
+import com.deharri.jlds.listing.entity.JobListing;
+import com.deharri.jlds.review.dto.request.CreateReviewRequest;
+import com.deharri.jlds.review.dto.response.RatingSummary;
+import com.deharri.jlds.review.dto.response.ReviewListResponse;
+import com.deharri.jlds.review.dto.response.ReviewResponse;
+import com.deharri.jlds.review.entity.JobReview;
+import com.deharri.jlds.review.mapper.ReviewMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.List;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class ReviewService {
+
+    private final ReviewRepository reviewRepository;
+    private final ReviewMapper reviewMapper;
+    private final JobListingService jobListingService;
+
+    @Transactional
+    public ReviewResponse createReview(UUID jobId, CreateReviewRequest request, UUID reviewerId) {
+        JobListing listing = jobListingService.findListingOrThrow(jobId);
+
+        if (listing.getStatus() != JobStatus.COMPLETED) {
+            throw new InvalidOperationException("Can only review completed jobs");
+        }
+
+        // Determine review type based on reviewer's role in the job
+        ReviewType reviewType;
+        UUID revieweeId;
+
+        if (listing.getConsumerId().equals(reviewerId)) {
+            // Consumer reviewing the worker
+            reviewType = ReviewType.CONSUMER_TO_WORKER;
+            revieweeId = listing.getAssignedWorkerId();
+            if (revieweeId == null) {
+                throw new InvalidOperationException("No worker assigned to this job");
+            }
+        } else if (listing.getAssignedWorkerId() != null && listing.getAssignedWorkerId().equals(reviewerId)) {
+            // Worker reviewing the consumer
+            reviewType = ReviewType.WORKER_TO_CONSUMER;
+            revieweeId = listing.getConsumerId();
+        } else {
+            throw new UnauthorizedAccessException("You are not a participant in this job");
+        }
+
+        // Check if review already exists for this direction
+        if (reviewRepository.findByJobIdAndReviewType(jobId, reviewType).isPresent()) {
+            throw new InvalidOperationException("You have already reviewed this job");
+        }
+
+        JobReview review = reviewMapper.toEntity(request);
+        review.setJobId(jobId);
+        review.setReviewerId(reviewerId);
+        review.setRevieweeId(revieweeId);
+        review.setReviewType(reviewType);
+
+        review = reviewRepository.save(review);
+        log.info("Review created: {} for job: {} type: {}", review.getReviewId(), jobId, reviewType);
+        return reviewMapper.toResponse(review);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ReviewResponse> getReviewsForJob(UUID jobId) {
+        jobListingService.findListingOrThrow(jobId);
+        return reviewRepository.findByJobId(jobId).stream()
+                .map(reviewMapper::toResponse)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public ReviewListResponse getWorkerReviews(UUID workerId, int page, int size) {
+        size = Math.min(Math.max(size, 1), 50);
+        Pageable pageable = PageRequest.of(page, size);
+        Page<JobReview> reviews = reviewRepository.findByRevieweeIdAndReviewTypeOrderByCreatedAtDesc(
+                workerId, ReviewType.CONSUMER_TO_WORKER, pageable);
+
+        return ReviewListResponse.builder()
+                .reviews(reviews.getContent().stream().map(reviewMapper::toResponse).toList())
+                .page(reviews.getNumber())
+                .size(reviews.getSize())
+                .totalElements(reviews.getTotalElements())
+                .totalPages(reviews.getTotalPages())
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public RatingSummary getWorkerRatingSummary(UUID workerId) {
+        Double avgRating = reviewRepository.getAverageRating(workerId, ReviewType.CONSUMER_TO_WORKER);
+        Long totalReviews = reviewRepository.countReviews(workerId, ReviewType.CONSUMER_TO_WORKER);
+
+        return RatingSummary.builder()
+                .userId(workerId)
+                .averageRating(toBigDecimal(avgRating))
+                .totalReviews(totalReviews)
+                .averageQualityRating(toBigDecimal(reviewRepository.getAvgQualityRating(workerId)))
+                .averagePunctualityRating(toBigDecimal(reviewRepository.getAvgPunctualityRating(workerId)))
+                .averageCommunicationRating(toBigDecimal(reviewRepository.getAvgCommunicationRating(workerId)))
+                .averageValueRating(toBigDecimal(reviewRepository.getAvgValueRating(workerId)))
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public ReviewListResponse getConsumerReviews(UUID consumerId, int page, int size) {
+        size = Math.min(Math.max(size, 1), 50);
+        Pageable pageable = PageRequest.of(page, size);
+        Page<JobReview> reviews = reviewRepository.findByRevieweeIdAndReviewTypeOrderByCreatedAtDesc(
+                consumerId, ReviewType.WORKER_TO_CONSUMER, pageable);
+
+        return ReviewListResponse.builder()
+                .reviews(reviews.getContent().stream().map(reviewMapper::toResponse).toList())
+                .page(reviews.getNumber())
+                .size(reviews.getSize())
+                .totalElements(reviews.getTotalElements())
+                .totalPages(reviews.getTotalPages())
+                .build();
+    }
+
+    @Transactional(readOnly = true)
+    public RatingSummary getConsumerRatingSummary(UUID consumerId) {
+        Double avgRating = reviewRepository.getAverageRating(consumerId, ReviewType.WORKER_TO_CONSUMER);
+        Long totalReviews = reviewRepository.countReviews(consumerId, ReviewType.WORKER_TO_CONSUMER);
+
+        return RatingSummary.builder()
+                .userId(consumerId)
+                .averageRating(toBigDecimal(avgRating))
+                .totalReviews(totalReviews)
+                .averageCommunicationRating(toBigDecimal(reviewRepository.getAvgCommunicationRating(consumerId)))
+                .averageReliabilityRating(toBigDecimal(reviewRepository.getAvgReliabilityRating(consumerId)))
+                .build();
+    }
+
+    private BigDecimal toBigDecimal(Double value) {
+        if (value == null) return null;
+        return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP);
+    }
+}
