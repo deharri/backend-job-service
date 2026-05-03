@@ -38,7 +38,7 @@ public interface BidRepository extends JpaRepository<JobBid, UUID> {
     // ── Analytics ────────────────────────────────────────────────────
 
     @Query(value =
-            "SELECT status, COUNT(*) AS cnt FROM job_bid " +
+            "SELECT status, COUNT(*) AS cnt FROM job_bids " +
             "WHERE agency_id = :agencyId " +
             "  AND created_at >= :fromTs AND created_at < :toTs " +
             "GROUP BY status",

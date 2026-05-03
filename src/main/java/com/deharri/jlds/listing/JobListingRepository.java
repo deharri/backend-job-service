@@ -55,7 +55,7 @@ public interface JobListingRepository extends JpaRepository<JobListing, UUID>, J
 
     // ── Analytics aggregates ─────────────────────────────────────────
 
-    @Query(value = "SELECT status, COUNT(*) AS cnt FROM job_listing " +
+    @Query(value = "SELECT status, COUNT(*) AS cnt FROM job_listings " +
             "WHERE assigned_agency_id = :agencyId GROUP BY status",
             nativeQuery = true)
     List<Object[]> aggStatusCounts(@Param("agencyId") UUID agencyId);
@@ -63,7 +63,7 @@ public interface JobListingRepository extends JpaRepository<JobListing, UUID>, J
     /** Time series of jobs created per bucket. {@code granularity} is one of 'day', 'week', 'month'. */
     @Query(value =
             "SELECT date_trunc(:granularity, created_at) AS bucket, COUNT(*) AS cnt " +
-            "FROM job_listing " +
+            "FROM job_listings " +
             "WHERE assigned_agency_id = :agencyId " +
             "  AND created_at >= :fromTs AND created_at < :toTs " +
             "GROUP BY bucket ORDER BY bucket",
@@ -74,13 +74,13 @@ public interface JobListingRepository extends JpaRepository<JobListing, UUID>, J
             @Param("fromTs") java.time.Instant fromTs,
             @Param("toTs") java.time.Instant toTs);
 
-    @Query(value = "SELECT city, COUNT(*) AS cnt FROM job_listing " +
+    @Query(value = "SELECT city, COUNT(*) AS cnt FROM job_listings " +
             "WHERE assigned_agency_id = :agencyId " +
             "GROUP BY city ORDER BY cnt DESC",
             nativeQuery = true)
     List<Object[]> aggJobsByCity(@Param("agencyId") UUID agencyId);
 
-    @Query(value = "SELECT worker_type, COUNT(*) AS cnt FROM job_listing " +
+    @Query(value = "SELECT worker_type, COUNT(*) AS cnt FROM job_listings " +
             "WHERE assigned_agency_id = :agencyId " +
             "GROUP BY worker_type ORDER BY cnt DESC",
             nativeQuery = true)
@@ -88,7 +88,7 @@ public interface JobListingRepository extends JpaRepository<JobListing, UUID>, J
 
     @Query(value =
             "SELECT dispatched_worker_id, dispatched_worker_username, COUNT(*) AS cnt " +
-            "FROM job_listing " +
+            "FROM job_listings " +
             "WHERE assigned_agency_id = :agencyId " +
             "  AND dispatched_worker_id IS NOT NULL " +
             "  AND created_at >= :fromTs AND created_at < :toTs " +
@@ -107,7 +107,7 @@ public interface JobListingRepository extends JpaRepository<JobListing, UUID>, J
             "  COUNT(*) FILTER (WHERE dispatched_worker_id IS NOT NULL) AS dispatched, " +
             "  COUNT(*) FILTER (WHERE status IN ('IN_PROGRESS', 'COMPLETED')) AS inProgress, " +
             "  COUNT(*) FILTER (WHERE status = 'COMPLETED') AS completed " +
-            "FROM job_listing WHERE assigned_agency_id = :agencyId",
+            "FROM job_listings WHERE assigned_agency_id = :agencyId",
             nativeQuery = true)
     Object aggJobsFunnel(@Param("agencyId") UUID agencyId);
 }
