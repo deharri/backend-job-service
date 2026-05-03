@@ -6,8 +6,8 @@ import com.deharri.jlds.notifications.dto.response.AgencyNotificationDto;
 import com.deharri.jlds.notifications.dto.response.UnreadSummaryDto;
 import com.deharri.jlds.notifications.entity.AgencyNotification;
 import com.deharri.jlds.notifications.entity.AgencyNotification.Kind;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -16,13 +16,23 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.UUID;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class AgencyNotificationService {
 
     private final AgencyNotificationRepository repo;
     private final SseEmitterRegistry sseRegistry;
+    // JobListingService also depends on this bean (it calls publish(...) on dispatch/confirm),
+    // so we resolve lazily to break the constructor-time cycle.
     private final JobListingService jobListingService;
+
+    public AgencyNotificationService(
+            AgencyNotificationRepository repo,
+            SseEmitterRegistry sseRegistry,
+            @Lazy JobListingService jobListingService) {
+        this.repo = repo;
+        this.sseRegistry = sseRegistry;
+        this.jobListingService = jobListingService;
+    }
 
     @Transactional
     public void publish(UUID agencyId, Kind kind, UUID jobId, String title, String body) {
