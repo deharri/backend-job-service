@@ -58,3 +58,7 @@ springdoc:
 
 worker-sync:
   ttl-minutes: 60
+
+jlds:
+  internal:
+    shared-secret: ${INTERNAL_SECRET:internal-secret-change-me}

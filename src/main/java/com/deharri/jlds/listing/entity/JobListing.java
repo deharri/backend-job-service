@@ -99,11 +99,21 @@ public class JobListing {
 
     private String assignedWorkerUsername;
 
+    private UUID assignedAgencyId;
+
+    private String assignedAgencyName;
+
+    private UUID dispatchedWorkerId;
+
+    private String dispatchedWorkerUsername;
+
     private Instant assignedAt;
 
     private Instant startedAt;
 
     private Instant completedAt;
+
+    private Instant consumerConfirmedAt;
 
     private Instant cancelledAt;
 

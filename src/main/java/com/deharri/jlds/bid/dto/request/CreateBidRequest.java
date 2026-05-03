@@ -11,6 +11,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.UUID;
 
 @Data
 @Builder
@@ -30,10 +31,14 @@ public class CreateBidRequest {
 
     private LocalDate proposedStartDate;
 
-    // Denormalized worker info (from frontend/profile)
+    // Denormalized worker info (from frontend/profile) — used when bidding as a worker
     private String workerFirstName;
     private String workerLastName;
     private WorkerType workerWorkerType;
     private Integer workerExperienceYears;
     private BigDecimal workerRating;
+
+    // Agency bidder fields — when set, the bid is from the agency (not the worker)
+    private UUID agencyId;
+    private String agencyName;
 }

@@ -16,7 +16,8 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "job_bids", uniqueConstraints = {
-        @UniqueConstraint(name = "uk_job_bid_job_worker", columnNames = {"job_id", "worker_id"})
+        @UniqueConstraint(name = "uk_job_bid_job_worker", columnNames = {"job_id", "worker_id"}),
+        @UniqueConstraint(name = "uk_job_bid_job_agency", columnNames = {"job_id", "agency_id"})
 })
 @NoArgsConstructor
 @AllArgsConstructor
@@ -33,10 +34,9 @@ public class JobBid {
     @Column(name = "job_id", nullable = false)
     private UUID jobId;
 
-    @Column(name = "worker_id", nullable = false)
+    @Column(name = "worker_id")
     private UUID workerId;
 
-    @Column(nullable = false)
     private String workerUsername;
 
     private String workerFirstName;
@@ -50,6 +50,11 @@ public class JobBid {
 
     @Column(precision = 3, scale = 2)
     private BigDecimal workerRating;
+
+    @Column(name = "agency_id")
+    private UUID agencyId;
+
+    private String agencyName;
 
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal proposedAmount;

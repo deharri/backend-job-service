@@ -4,6 +4,8 @@ import com.deharri.jlds.bid.dto.request.CreateBidRequest;
 import com.deharri.jlds.bid.dto.request.UpdateBidRequest;
 import com.deharri.jlds.bid.dto.response.BidListResponse;
 import com.deharri.jlds.bid.dto.response.BidResponse;
+import com.deharri.jlds.error.exception.UnauthorizedAccessException;
+import com.deharri.jlds.listing.JobListingService;
 import com.deharri.jlds.util.HeaderExtractor;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -23,6 +25,7 @@ import java.util.UUID;
 public class BidController {
 
     private final BidService bidService;
+    private final JobListingService jobListingService;
 
     @PostMapping("/listings/{jobId}/bids")
     @Operation(summary = "Place a bid on a job listing")
@@ -30,10 +33,19 @@ public class BidController {
             @PathVariable UUID jobId,
             @Valid @RequestBody CreateBidRequest request,
             HttpServletRequest httpRequest) {
-        UUID workerId = HeaderExtractor.getUserId(httpRequest);
+        UUID callerId = HeaderExtractor.getUserId(httpRequest);
         String username = HeaderExtractor.getUsername(httpRequest);
+
+        // Agency ownership check: if this is an agency bid, the caller must own that agency.
+        if (request.getAgencyId() != null) {
+            UUID agencyOwner = jobListingService.umsFetchAgencyOwnerUserId(request.getAgencyId());
+            if (agencyOwner == null || !callerId.equals(agencyOwner)) {
+                throw new UnauthorizedAccessException("You are not the owner of agency " + request.getAgencyId());
+            }
+        }
+
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(bidService.placeBid(jobId, request, workerId, username));
+                .body(bidService.placeBid(jobId, request, callerId, username));
     }
 
     @GetMapping("/listings/{jobId}/bids")
@@ -101,5 +113,27 @@ public class BidController {
             HttpServletRequest httpRequest) {
         UUID workerId = HeaderExtractor.getUserId(httpRequest);
         return ResponseEntity.ok(bidService.getMyBids(workerId, page, size));
+    }
+
+    @GetMapping("/bids/my-agency-bids")
+    @Operation(summary = "Get bids placed by the caller's agency (caller must be the agency owner)")
+    public ResponseEntity<BidListResponse> getMyAgencyBids(
+            @RequestParam UUID agencyId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            HttpServletRequest httpRequest) {
+        UUID callerId = HeaderExtractor.getUserId(httpRequest);
+        return ResponseEntity.ok(bidService.getMyAgencyBids(agencyId, callerId, page, size));
+    }
+
+    @GetMapping("/bids/agency/{agencyId}/analytics/win-rate")
+    @Operation(summary = "Win-rate breakdown for the agency's bids over the given range.")
+    public ResponseEntity<com.deharri.jlds.bid.dto.response.BidWinRate> agencyWinRate(
+            @PathVariable UUID agencyId,
+            @RequestParam java.time.Instant from,
+            @RequestParam java.time.Instant to,
+            HttpServletRequest httpRequest) {
+        UUID callerId = HeaderExtractor.getUserId(httpRequest);
+        return ResponseEntity.ok(bidService.getAgencyWinRate(agencyId, callerId, from, to));
     }
 }

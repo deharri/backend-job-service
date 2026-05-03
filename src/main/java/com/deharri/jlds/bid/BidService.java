@@ -34,28 +34,60 @@ public class BidService {
     private final BidMapper bidMapper;
     private final JobListingService jobListingService;
     private final JobListingRepository jobListingRepository;
+    private final com.deharri.jlds.notifications.AgencyNotificationService agencyNotificationService;
 
     @Transactional
-    public BidResponse placeBid(UUID jobId, CreateBidRequest request, UUID workerId, String username) {
+    public BidResponse placeBid(UUID jobId, CreateBidRequest request, UUID callerId, String username) {
         JobListing listing = jobListingService.findListingOrThrow(jobId);
 
         if (listing.getStatus() != JobStatus.OPEN) {
             throw new InvalidOperationException("Can only bid on jobs with OPEN status");
         }
 
-        if (listing.getConsumerId().equals(workerId)) {
+        if (listing.getConsumerId().equals(callerId)) {
             throw new InvalidOperationException("Cannot bid on your own job listing");
         }
 
-        if (bidRepository.existsByJobIdAndWorkerId(jobId, workerId)) {
-            throw new InvalidOperationException("You have already placed a bid on this job");
+        boolean isAgencyBid = request.getAgencyId() != null;
+
+        // Agency-bid validation: caller must be the agency owner AND the agency must have an active subscription.
+        if (isAgencyBid) {
+            JobListingService.UmsAgencyInfo agencyInfo = jobListingService.umsFetchAgencyInfo(request.getAgencyId());
+            if (agencyInfo == null || agencyInfo.ownerUserId() == null) {
+                throw new InvalidOperationException("Agency not found: " + request.getAgencyId());
+            }
+            if (!agencyInfo.ownerUserId().equals(callerId)) {
+                throw new UnauthorizedAccessException("Only the agency owner can place a bid on behalf of the agency");
+            }
+            if (!agencyInfo.subscriptionActive()) {
+                throw new InvalidOperationException("Agency subscription is inactive — renew to place bids");
+            }
+        }
+
+        // Duplicate-bid check per identity
+        if (isAgencyBid) {
+            if (bidRepository.existsByJobIdAndAgencyId(jobId, request.getAgencyId())) {
+                throw new InvalidOperationException("Your agency has already placed a bid on this job");
+            }
+        } else {
+            if (bidRepository.existsByJobIdAndWorkerId(jobId, callerId)) {
+                throw new InvalidOperationException("You have already placed a bid on this job");
+            }
         }
 
         JobBid bid = bidMapper.toEntity(request);
         bid.setJobId(jobId);
-        bid.setWorkerId(workerId);
-        bid.setWorkerUsername(username);
         bid.setStatus(BidStatus.PENDING);
+        if (isAgencyBid) {
+            bid.setAgencyId(request.getAgencyId());
+            bid.setAgencyName(request.getAgencyName());
+            // Worker fields stay null
+            bid.setWorkerId(null);
+            bid.setWorkerUsername(null);
+        } else {
+            bid.setWorkerId(callerId);
+            bid.setWorkerUsername(username);
+        }
 
         bid = bidRepository.save(bid);
 
@@ -63,7 +95,18 @@ public class BidService {
         listing.setBidCount(listing.getBidCount() + 1);
         jobListingRepository.save(listing);
 
-        log.info("Bid placed: {} on job: {} by worker: {}", bid.getBidId(), jobId, username);
+        log.info("Bid placed: {} on job: {} by {}: {}", bid.getBidId(), jobId,
+                isAgencyBid ? "agency" : "worker",
+                isAgencyBid ? request.getAgencyName() : username);
+
+        if (listing.getAssignedAgencyId() != null) {
+            agencyNotificationService.publish(
+                    listing.getAssignedAgencyId(),
+                    com.deharri.jlds.notifications.entity.AgencyNotification.Kind.BID_PLACED,
+                    listing.getJobId(),
+                    "New bid on a job assigned to your agency",
+                    "Bid by " + (request.getAgencyId() != null ? "an agency" : "a worker"));
+        }
         return bidMapper.toResponse(bid);
     }
 
@@ -168,12 +211,17 @@ public class BidService {
         bid.setStatus(BidStatus.ACCEPTED);
         bid = bidRepository.save(bid);
 
-        // Assign worker to job
+        // Assign performer to job — branch on bid type
         listing.setStatus(JobStatus.ASSIGNED);
-        listing.setAssignedWorkerId(bid.getWorkerId());
         listing.setAssignedBidId(bid.getBidId());
-        listing.setAssignedWorkerUsername(bid.getWorkerUsername());
         listing.setAssignedAt(Instant.now());
+        if (bid.getAgencyId() != null) {
+            listing.setAssignedAgencyId(bid.getAgencyId());
+            listing.setAssignedAgencyName(bid.getAgencyName());
+        } else {
+            listing.setAssignedWorkerId(bid.getWorkerId());
+            listing.setAssignedWorkerUsername(bid.getWorkerUsername());
+        }
         jobListingRepository.save(listing);
 
         // Reject all other pending bids
@@ -217,8 +265,68 @@ public class BidService {
                 .build();
     }
 
+    /**
+     * Returns bids placed on behalf of an agency. The caller must be the agency owner
+     * (verified via UMS lookup), so the FE can safely call this when the user is in
+     * agency mode without exposing other agencies' bids.
+     */
+    @Transactional(readOnly = true)
+    public BidListResponse getMyAgencyBids(UUID agencyId, UUID callerId, int page, int size) {
+        JobListingService.UmsAgencyInfo info = jobListingService.umsFetchAgencyInfo(agencyId);
+        if (info == null || info.ownerUserId() == null) {
+            throw new InvalidOperationException("Agency not found: " + agencyId);
+        }
+        if (!info.ownerUserId().equals(callerId)) {
+            throw new UnauthorizedAccessException("Only the agency owner can view this agency's bids");
+        }
+
+        size = Math.min(Math.max(size, 1), 50);
+        Pageable pageable = PageRequest.of(page, size);
+        Page<JobBid> bids = bidRepository.findByAgencyIdOrderByCreatedAtDesc(agencyId, pageable);
+
+        return BidListResponse.builder()
+                .bids(bids.getContent().stream().map(bidMapper::toResponse).toList())
+                .page(bids.getNumber())
+                .size(bids.getSize())
+                .totalElements(bids.getTotalElements())
+                .totalPages(bids.getTotalPages())
+                .build();
+    }
+
     private JobBid findBidOrThrow(UUID bidId) {
         return bidRepository.findById(bidId)
                 .orElseThrow(() -> new BidNotFoundException("Bid not found: " + bidId));
+    }
+
+    // ── Analytics ────────────────────────────────────────────────────
+
+    public com.deharri.jlds.bid.dto.response.BidWinRate getAgencyWinRate(
+            UUID agencyId, UUID callerId,
+            java.time.Instant from, java.time.Instant to) {
+        JobListingService.UmsAgencyInfo info = jobListingService.umsFetchAgencyInfo(agencyId);
+        if (info == null || !callerId.equals(info.ownerUserId())) {
+            throw new UnauthorizedAccessException("Only the agency owner can view this");
+        }
+
+        long won = 0, pending = 0, rejected = 0, withdrawn = 0;
+        for (Object[] row : bidRepository.aggAgencyBidStatusCounts(agencyId, from, to)) {
+            String status = (String) row[0];
+            long cnt = ((Number) row[1]).longValue();
+            switch (status) {
+                case "ACCEPTED": won = cnt; break;
+                case "PENDING": pending = cnt; break;
+                case "REJECTED": rejected = cnt; break;
+                case "WITHDRAWN": withdrawn = cnt; break;
+                default: break;
+            }
+        }
+        long total = won + pending + rejected + withdrawn;
+        double pct = total == 0 ? 0.0 : Math.round(1000.0 * won / total) / 10.0;
+        return new com.deharri.jlds.bid.dto.response.BidWinRate(
+                won, pending, rejected, withdrawn, total, pct);
+    }
+
+    public long countAllAgencyBids(UUID agencyId) {
+        return bidRepository.countAllByAgencyId(agencyId);
     }
 }

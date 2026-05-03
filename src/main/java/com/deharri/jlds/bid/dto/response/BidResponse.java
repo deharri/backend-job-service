@@ -20,10 +20,14 @@ import java.util.UUID;
 public class BidResponse {
     private UUID bidId;
     private UUID jobId;
+    /** Set on worker bids; null on agency bids. */
     private UUID workerId;
     private String workerUsername;
     private String workerFirstName;
     private String workerLastName;
+    /** Set on agency bids; null on worker bids. */
+    private UUID agencyId;
+    private String agencyName;
     private WorkerType workerWorkerType;
     private Integer workerExperienceYears;
     private BigDecimal workerRating;

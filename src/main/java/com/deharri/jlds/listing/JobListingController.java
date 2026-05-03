@@ -1,5 +1,6 @@
 package com.deharri.jlds.listing;
 
+import com.deharri.jlds.listing.dto.request.CreateJobFromOfferRequest;
 import com.deharri.jlds.listing.dto.request.CreateJobListingRequest;
 import com.deharri.jlds.listing.dto.request.JobSearchFilter;
 import com.deharri.jlds.listing.dto.request.UpdateJobListingRequest;
@@ -25,6 +26,7 @@ import java.util.UUID;
 public class JobListingController {
 
     private final JobListingService jobListingService;
+    private final com.deharri.jlds.bid.BidService bidService;
 
     @PostMapping
     @Operation(summary = "Create a new job listing")
@@ -35,6 +37,15 @@ public class JobListingController {
         String username = HeaderExtractor.getUsername(httpRequest);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(jobListingService.createListing(request, consumerId, username));
+    }
+
+    @PostMapping("/from-offer")
+    @Operation(summary = "Create a job listing from an accepted chat offer")
+    public ResponseEntity<JobListingResponse> createJobFromOffer(
+            @Valid @RequestBody CreateJobFromOfferRequest request,
+            HttpServletRequest httpRequest) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(jobListingService.createJobFromOffer(request));
     }
 
     @GetMapping
@@ -90,12 +101,22 @@ public class JobListingController {
     }
 
     @PutMapping("/{jobId}/complete")
-    @Operation(summary = "Mark job as completed (assigned worker only)")
+    @Operation(summary = "Mark job as completed (assigned worker, agency owner, or dispatched worker)")
     public ResponseEntity<JobListingResponse> completeJob(
             @PathVariable UUID jobId,
             HttpServletRequest httpRequest) {
         UUID workerId = HeaderExtractor.getUserId(httpRequest);
         return ResponseEntity.ok(jobListingService.completeJob(jobId, workerId));
+    }
+
+    @PutMapping("/{jobId}/dispatch")
+    @Operation(summary = "Dispatch an agency-assigned job to a specific worker (agency owner only)")
+    public ResponseEntity<JobListingResponse> dispatchJob(
+            @PathVariable UUID jobId,
+            @Valid @RequestBody com.deharri.jlds.listing.dto.request.DispatchJobRequest request,
+            HttpServletRequest httpRequest) {
+        UUID callerId = HeaderExtractor.getUserId(httpRequest);
+        return ResponseEntity.ok(jobListingService.dispatchToWorker(jobId, request.getWorkerId(), callerId));
     }
 
     @PutMapping("/{jobId}/confirm-completion")
@@ -125,5 +146,83 @@ public class JobListingController {
             HttpServletRequest httpRequest) {
         UUID workerId = HeaderExtractor.getUserId(httpRequest);
         return ResponseEntity.ok(jobListingService.getMyJobs(workerId, page, size));
+    }
+
+    @GetMapping("/agency/{agencyId}")
+    @Operation(summary = "Get jobs assigned to an agency (agency-mode dashboard)")
+    public ResponseEntity<JobListingListResponse> getAgencyJobs(
+            @PathVariable UUID agencyId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(jobListingService.getMyAgencyJobs(agencyId, page, size));
+    }
+
+    @GetMapping("/agency/{agencyId}/worker-stats")
+    @Operation(summary = "Per-worker stats under an agency: completed-confirmed job counts. " +
+            "Powers the future agency-owner analytics dashboard.")
+    public ResponseEntity<java.util.Map<String, Long>> getAgencyWorkerStats(
+            @PathVariable UUID agencyId,
+            @RequestParam UUID workerUserId) {
+        long completed = jobListingService.countAgencyJobsForWorker(agencyId, workerUserId);
+        return ResponseEntity.ok(java.util.Map.of("completedJobs", completed));
+    }
+
+    @GetMapping("/my-dispatched-jobs")
+    @Operation(summary = "Get jobs dispatched to the calling worker by their agency")
+    public ResponseEntity<JobListingListResponse> getMyDispatchedJobs(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            HttpServletRequest httpRequest) {
+        UUID workerId = HeaderExtractor.getUserId(httpRequest);
+        return ResponseEntity.ok(jobListingService.getMyDispatchedJobs(workerId, page, size));
+    }
+
+    // ── Analytics ────────────────────────────────────────────────────
+
+    @GetMapping("/agency/{agencyId}/analytics/job-status-counts")
+    @Operation(summary = "Counts of agency jobs grouped by status.")
+    public ResponseEntity<java.util.List<com.deharri.jlds.listing.dto.response.analytics.StatusCount>>
+        agencyStatusCounts(@PathVariable UUID agencyId) {
+        return ResponseEntity.ok(jobListingService.agencyStatusCounts(agencyId));
+    }
+
+    @GetMapping("/agency/{agencyId}/analytics/jobs-over-time")
+    @Operation(summary = "Time series of jobs created per bucket. granularity = day | week | month.")
+    public ResponseEntity<java.util.List<com.deharri.jlds.listing.dto.response.analytics.TimeBucket>>
+        agencyJobsOverTime(
+            @PathVariable UUID agencyId,
+            @RequestParam(defaultValue = "day") String granularity,
+            @RequestParam java.time.Instant from,
+            @RequestParam java.time.Instant to) {
+        return ResponseEntity.ok(jobListingService.agencyJobsOverTime(agencyId, granularity, from, to));
+    }
+
+    @GetMapping("/agency/{agencyId}/analytics/jobs-by-city")
+    public ResponseEntity<java.util.List<com.deharri.jlds.listing.dto.response.analytics.CityCount>>
+        agencyJobsByCity(@PathVariable UUID agencyId) {
+        return ResponseEntity.ok(jobListingService.agencyJobsByCity(agencyId));
+    }
+
+    @GetMapping("/agency/{agencyId}/analytics/jobs-by-worker-type")
+    public ResponseEntity<java.util.List<com.deharri.jlds.listing.dto.response.analytics.WorkerTypeCount>>
+        agencyJobsByWorkerType(@PathVariable UUID agencyId) {
+        return ResponseEntity.ok(jobListingService.agencyJobsByWorkerType(agencyId));
+    }
+
+    @GetMapping("/agency/{agencyId}/analytics/jobs-per-worker")
+    public ResponseEntity<java.util.List<com.deharri.jlds.listing.dto.response.analytics.WorkerJobCount>>
+        agencyJobsPerWorker(
+            @PathVariable UUID agencyId,
+            @RequestParam java.time.Instant from,
+            @RequestParam java.time.Instant to) {
+        return ResponseEntity.ok(jobListingService.agencyJobsPerWorker(agencyId, from, to));
+    }
+
+    @GetMapping("/agency/{agencyId}/analytics/funnel")
+    @Operation(summary = "Pipeline funnel: bids placed → accepted → dispatched → in progress → completed.")
+    public ResponseEntity<com.deharri.jlds.listing.dto.response.analytics.JobsFunnel> agencyFunnel(
+            @PathVariable UUID agencyId) {
+        long bidsPlaced = bidService.countAllAgencyBids(agencyId);
+        return ResponseEntity.ok(jobListingService.agencyJobsFunnel(agencyId, bidsPlaced));
     }
 }
